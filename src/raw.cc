@@ -306,6 +306,12 @@ int SocketWrap::CreateSocket (void) {
     
     this->poll_fd_ = socket (this->family_, SOCK_RAW, this->protocol_);
     
+#ifdef SO_TIMESTAMP
+    int on = 1;
+    if (setsockopt(this->poll_fd_, SOL_SOCKET, SO_TIMESTAMP, &on, sizeof(on)))
+        return SOCKET_ERRNO;
+#endif
+    
 #ifdef __APPLE__
     /**
      ** On MAC OS X platforms for non-privileged users wishing to utilise ICMP
@@ -522,16 +528,7 @@ NAN_METHOD(SocketWrap::Recv) {
     sockaddr_in6 sin6_address;
     char addr[50];
     int rc;
-#ifdef _WIN32
-    int sin_length = socket->family_ == AF_INET6
-            ? sizeof (sin6_address)
-            : sizeof (sin_address);
-#else
-    socklen_t sin_length = socket->family_ == AF_INET6
-            ? sizeof (sin6_address)
-            : sizeof (sin_address);
-#endif
-    
+
     if (info.Length () < 2) {
         Nan::ThrowError("Five arguments are required");
         return;
@@ -554,27 +551,51 @@ NAN_METHOD(SocketWrap::Recv) {
         Nan::ThrowError(raw_strerror (errno));
         return;
     }
-
-    if (socket->family_ == AF_INET6) {
-        memset (&sin6_address, 0, sizeof (sin6_address));
-        rc = recvfrom (socket->poll_fd_, node::Buffer::Data (buffer),
-                (int) node::Buffer::Length (buffer), 0, (sockaddr *) &sin6_address,
-                &sin_length);
-    } else {
-        memset (&sin_address, 0, sizeof (sin_address));
-        rc = recvfrom (socket->poll_fd_, node::Buffer::Data (buffer),
-                (int) node::Buffer::Length (buffer), 0, (sockaddr *) &sin_address,
-                &sin_length);
-    }
     
+    struct msghdr msg;
+    struct iovec iov;
+    char ctrl_buf[1024];
+    struct cmsghdr* cmsg;
+
+    memset(&msg, 0, sizeof(msg));
+    memset(&ctrl_buf, 0, sizeof(ctrl_buf));
+    memset(&iov, 0, sizeof(iov));
+    
+    iov.iov_base = node::Buffer::Data(buffer);
+    iov.iov_len = node::Buffer::Length(buffer);
+    
+    msg.msg_name = (socket->family_ == AF_INET6) ? (void*)&sin6_address : (void*)&sin_address;
+    msg.msg_namelen = (socket->family_ == AF_INET6) ? sizeof(sin6_address) : sizeof(sin_address);
+    msg.msg_iov = &iov;
+    msg.msg_iovlen = 1;
+    msg.msg_control = ctrl_buf;
+    msg.msg_controllen = sizeof(ctrl_buf);
+
+    rc = recvmsg(socket->poll_fd_, &msg, 0);
+    if (rc == SOCKET_ERROR) {
+        Nan::ThrowError(raw_strerror(errno));
+        return;
+    }
+
+    struct timeval recv_time;
+    
+    for (cmsg = CMSG_FIRSTHDR(&msg); cmsg != NULL; cmsg = CMSG_NXTHDR(&msg, cmsg)) {
+        if (cmsg->cmsg_level == SOL_SOCKET && cmsg->cmsg_type == SO_TIMESTAMP) {
+            memcpy(&recv_time, CMSG_DATA(cmsg), sizeof(recv_time));
+            break;
+        }
+    }
+
     if (rc == SOCKET_ERROR) {
         Nan::ThrowError(raw_strerror (SOCKET_ERRNO));
         return;
     }
 
-    auto now = std::chrono::high_resolution_clock::now();
-    uint64_t timestamp_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(now.time_since_epoch()).count();
-    
+    if (cmsg == NULL)
+        gettimeofday(&recv_time, NULL);
+
+    long recvtime = recv_time.tv_sec * 1000000 + recv_time.tv_usec;
+
     if (socket->family_ == AF_INET6)
         uv_ip6_name (&sin6_address, addr, 50);
     else
@@ -586,7 +607,7 @@ NAN_METHOD(SocketWrap::Recv) {
     argv[0] = info[0];
     argv[1] = Nan::New<Number>(rc);
     argv[2] = Nan::New(addr).ToLocalChecked();
-    argv[3] = Nan::New<Number>(static_cast<double>(timestamp_ns));
+    argv[3] = Nan::New<Number>(recvtime);
     Nan::Call(Nan::Callback(cb), argc, argv);
     
     info.GetReturnValue().Set(info.This());
@@ -644,8 +665,8 @@ NAN_METHOD(SocketWrap::Send) {
 
     data = node::Buffer::Data (buffer) + offset;
 
-    auto send_time = std::chrono::high_resolution_clock::now();
-    uint64_t send_timestamp_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(send_time.time_since_epoch()).count();
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
     
     if (socket->family_ == AF_INET6) {
 #if UV_VERSION_MAJOR > 0
@@ -677,11 +698,13 @@ NAN_METHOD(SocketWrap::Send) {
         return;
     }
     
+    long sendtime = tv.tv_sec * 1000000 + tv.tv_usec;
+    
     Local<Function> cb = Local<Function>::Cast (info[4]);
     const unsigned argc = 2;
     Local<Value> argv[argc];
     argv[0] = Nan::New<Number>(rc);
-    argv[1] = Nan::New<Number>(static_cast<double>(send_timestamp_ns));
+    argv[1] = Nan::New<Number>(sendtime);
     Nan::Call(Nan::Callback(cb), argc, argv);
     
     info.GetReturnValue().Set(info.This());

@@ -87,7 +87,7 @@ Socket.prototype.onRecvReady = function () {
     try {
         this.wrap.recv(this.buffer, function (buffer, bytes, source, timestamp) {
             var newBuffer = buffer.slice(0, bytes);
-            me.emit("message", newBuffer, source, timestamp);
+            me.emit("message", newBuffer, source, timestamp * 1000);
         });
     } catch (error) {
         me.emit("error", error);
@@ -103,7 +103,7 @@ Socket.prototype.onSendReady = function () {
                 req.beforeCallback();
             this.wrap.send(req.buffer, req.offset, req.length,
                 req.address, function (bytes, timestamp) {
-                    req.afterCallback.call(me, null, bytes, timestamp);
+                    req.afterCallback.call(me, null, bytes, timestamp * 1000);
                 });
         } catch (error) {
             req.afterCallback.call(me, error, 0);
