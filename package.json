@@ -7,7 +7,8 @@
     "example": "example"
   },
   "dependencies": {
-    "nan": "2.19.*"
+    "nan": "^2.22.0",
+    "node-gyp": "^11.0.0"
   },
   "contributors": [
     {
