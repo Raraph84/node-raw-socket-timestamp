@@ -3,6 +3,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <chrono>
 #include "raw.h"
 
 #ifdef _WIN32
@@ -570,6 +571,9 @@ NAN_METHOD(SocketWrap::Recv) {
         Nan::ThrowError(raw_strerror (SOCKET_ERRNO));
         return;
     }
+
+    auto now = std::chrono::high_resolution_clock::now();
+    uint64_t timestamp_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(now.time_since_epoch()).count();
     
     if (socket->family_ == AF_INET6)
         uv_ip6_name (&sin6_address, addr, 50);
@@ -577,11 +581,12 @@ NAN_METHOD(SocketWrap::Recv) {
         uv_ip4_name (&sin_address, addr, 50);
     
     Local<Function> cb = Local<Function>::Cast (info[1]);
-    const unsigned argc = 3;
+    const unsigned argc = 4;
     Local<Value> argv[argc];
     argv[0] = info[0];
     argv[1] = Nan::New<Number>(rc);
     argv[2] = Nan::New(addr).ToLocalChecked();
+    argv[3] = Nan::New<Number>(static_cast<double>(timestamp_ns));
     Nan::Call(Nan::Callback(cb), argc, argv);
     
     info.GetReturnValue().Set(info.This());
@@ -638,6 +643,9 @@ NAN_METHOD(SocketWrap::Send) {
     length = Nan::To<Uint32>(info[2]).ToLocalChecked()->Value();
 
     data = node::Buffer::Data (buffer) + offset;
+
+    auto send_time = std::chrono::high_resolution_clock::now();
+    uint64_t send_timestamp_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(send_time.time_since_epoch()).count();
     
     if (socket->family_ == AF_INET6) {
 #if UV_VERSION_MAJOR > 0
@@ -670,9 +678,10 @@ NAN_METHOD(SocketWrap::Send) {
     }
     
     Local<Function> cb = Local<Function>::Cast (info[4]);
-    const unsigned argc = 1;
+    const unsigned argc = 2;
     Local<Value> argv[argc];
     argv[0] = Nan::New<Number>(rc);
+    argv[1] = Nan::New<Number>(static_cast<double>(send_timestamp_ns));
     Nan::Call(Nan::Callback(cb), argc, argv);
     
     info.GetReturnValue().Set(info.This());

@@ -82,9 +82,9 @@ Socket.prototype.onError = function (error) {
 Socket.prototype.onRecvReady = function () {
     var me = this;
     try {
-        this.wrap.recv(this.buffer, function (buffer, bytes, source) {
+        this.wrap.recv(this.buffer, function (buffer, bytes, source, timestamp) {
             var newBuffer = buffer.slice(0, bytes);
-            me.emit("message", newBuffer, source);
+            me.emit("message", newBuffer, source, timestamp);
         });
     } catch (error) {
         me.emit("error", error);
@@ -99,8 +99,8 @@ Socket.prototype.onSendReady = function () {
             if (req.beforeCallback)
                 req.beforeCallback();
             this.wrap.send(req.buffer, req.offset, req.length,
-                req.address, function (bytes) {
-                    req.afterCallback.call(me, null, bytes);
+                req.address, function (bytes, timestamp) {
+                    req.afterCallback.call(me, null, bytes, timestamp);
                 });
         } catch (error) {
             req.afterCallback.call(me, error, 0);
