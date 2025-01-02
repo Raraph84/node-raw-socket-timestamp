@@ -3,7 +3,7 @@
 
 #include <stdio.h>
 #include <string.h>
-#include <chrono>
+#include <sys/time.h>
 #include "raw.h"
 
 #ifdef _WIN32
