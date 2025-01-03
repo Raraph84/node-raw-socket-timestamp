@@ -3,7 +3,10 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <chrono>
+#ifndef _WIN32
 #include <sys/time.h>
+#endif
 #include "raw.h"
 
 #ifdef _WIN32
@@ -40,6 +43,17 @@ static uint16_t checksum (uint16_t start_with, unsigned char *buffer,
     }
     
     return ~sum & 0xffff;
+}
+
+void get_current_time(timeval* tv) {
+    auto now = std::chrono::system_clock::now();
+    auto duration = now.time_since_epoch();
+
+    auto seconds = std::chrono::duration_cast<std::chrono::seconds>(duration);
+    auto microseconds = std::chrono::duration_cast<std::chrono::microseconds>(duration) - std::chrono::duration_cast<std::chrono::microseconds>(seconds);
+
+    tv->tv_sec = static_cast<long>(seconds.count());
+    tv->tv_usec = static_cast<long>(microseconds.count());
 }
 
 namespace raw {
@@ -528,6 +542,11 @@ NAN_METHOD(SocketWrap::Recv) {
     sockaddr_in6 sin6_address;
     char addr[50];
     int rc;
+#ifdef _WIN32
+    int sin_length = socket->family_ == AF_INET6
+            ? sizeof (sin6_address)
+            : sizeof (sin_address);
+#endif
 
     if (info.Length () < 2) {
         Nan::ThrowError("Five arguments are required");
@@ -552,6 +571,9 @@ NAN_METHOD(SocketWrap::Recv) {
         return;
     }
     
+    struct timeval recv_time;
+
+#ifndef _WIN32
     struct msghdr msg;
     struct iovec iov;
     char ctrl_buf[1024];
@@ -577,22 +599,36 @@ NAN_METHOD(SocketWrap::Recv) {
         return;
     }
 
-    struct timeval recv_time;
+    gettimeofday(&recv_time, NULL);
+#else
+    if (socket->family_ == AF_INET6) {
+        memset (&sin6_address, 0, sizeof (sin6_address));
+        rc = recvfrom (socket->poll_fd_, node::Buffer::Data (buffer),
+                (int) node::Buffer::Length (buffer), 0, (sockaddr *) &sin6_address,
+                &sin_length);
+    } else {
+        memset (&sin_address, 0, sizeof (sin_address));
+        rc = recvfrom (socket->poll_fd_, node::Buffer::Data (buffer),
+                (int) node::Buffer::Length (buffer), 0, (sockaddr *) &sin_address,
+                &sin_length);
+    }
     
+    get_current_time(&recv_time);
+#endif
+    
+#ifdef SO_TIMESTAMP
     for (cmsg = CMSG_FIRSTHDR(&msg); cmsg != NULL; cmsg = CMSG_NXTHDR(&msg, cmsg)) {
         if (cmsg->cmsg_level == SOL_SOCKET && cmsg->cmsg_type == SO_TIMESTAMP) {
             memcpy(&recv_time, CMSG_DATA(cmsg), sizeof(recv_time));
             break;
         }
     }
+#endif
 
     if (rc == SOCKET_ERROR) {
         Nan::ThrowError(raw_strerror (SOCKET_ERRNO));
         return;
     }
-
-    if (cmsg == NULL)
-        gettimeofday(&recv_time, NULL);
 
     long recvtime = recv_time.tv_sec * 1000000 + recv_time.tv_usec;
 
@@ -666,7 +702,11 @@ NAN_METHOD(SocketWrap::Send) {
     data = node::Buffer::Data (buffer) + offset;
 
     struct timeval tv;
+#ifndef _WIN32
     gettimeofday(&tv, NULL);
+#else
+    get_current_time(&tv);
+#endif
     
     if (socket->family_ == AF_INET6) {
 #if UV_VERSION_MAJOR > 0
